@@ -46,18 +46,19 @@ pub fn build(b: *std.Build) !void {
         // Add the -sUSE_OFFSET_CONVERTER flag
         link_step.addArg("-sUSE_OFFSET_CONVERTER");
 
-        // // Use the custom HTML template
-        // link_step.addArg("--shell-file");
-        // link_step.addArg("shell.html");
+        // Use the custom HTML template
+        link_step.addArg("--shell-file");
+        link_step.addArg("shell.html");
 
         // Embed the resources directory
         link_step.addArg("--preload-file");
         link_step.addArg("assets");
 
-        link_step.addArg("--memoryprofiler");
         link_step.addArg("-sALLOW_MEMORY_GROWTH");
         link_step.addArg("-sWASM_MEM_MAX=16MB");
         link_step.addArg("-sTOTAL_MEMORY=16MB");
+        link_step.addArg("-sERROR_ON_UNDEFINED_SYMBOLS=0");
+        link_step.addArg("-sEXPORTED_RUNTIME_METHODS=ccall,cwrap");
 
         b.getInstallStep().dependOn(&link_step.step);
         const run_step = try rlz.emcc.emscriptenRunStep(b);

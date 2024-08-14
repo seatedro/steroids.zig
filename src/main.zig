@@ -38,18 +38,6 @@ const State = struct {
 
 var state: State = undefined;
 
-extern fn js_save_high_score(score: u32) void;
-extern fn js_load_high_score() u32;
-
-// WASM exports
-export fn wasm_save_high_score(score: u32) void {
-    state.high_score = score;
-}
-
-export fn wasm_load_high_score() u32 {
-    return state.high_score;
-}
-
 const Sound = struct {
     asteroid: rl.Sound,
     bloop_lo: rl.Sound,
@@ -408,9 +396,6 @@ fn resetGame() !void {
     state.reset = false;
     state.game_over = false;
 
-    //TODO: uncomment when integrated with wasm
-    //state.high_score = js_load_high_score();
-
     try resetStage();
     try resetAsteroids();
 }
@@ -423,8 +408,6 @@ fn resetStage() !void {
             state.game_over = true;
             if (state.score > state.high_score) {
                 state.high_score = state.score;
-                //TODO: uncomment when integrated with wasm
-                //js_save_high_score(state.high_score);
             }
         }
     }
