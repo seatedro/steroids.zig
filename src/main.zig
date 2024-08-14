@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = std.math;
+const CustomAllocator = @import("allocator.zig").CustomAllocator;
 const rl = @import("raylib");
 const rlm = rl.math;
 const Vector2 = rl.Vector2;
@@ -9,6 +10,7 @@ const SCREEN_SIZE = rl.Vector2.init(800, 600);
 const SCALE = 24.0;
 
 const State = struct {
+    allocator: std.mem.Allocator,
     ship: Ship,
     now: f32,
     delta: f32,
@@ -22,16 +24,31 @@ const State = struct {
     lives: u32 = 3,
     last_score: u32 = 0,
     score: u32 = 0,
+    high_score: u32 = 0,
     reset: bool = false,
-    hard_mode: bool = false,
+    //TODO: disable getting shot by yourself.
+    hard_mode: bool = true,
     bloop: usize = 0,
     last_bloop: usize = 0,
     bloop_intensity: usize = 0,
     frame: usize = 0,
     game_started: bool = false,
+    game_over: bool = false,
 };
 
 var state: State = undefined;
+
+extern fn js_save_high_score(score: u32) void;
+extern fn js_load_high_score() u32;
+
+// WASM exports
+export fn wasm_save_high_score(score: u32) void {
+    state.high_score = score;
+}
+
+export fn wasm_load_high_score() u32 {
+    return state.high_score;
+}
 
 const Sound = struct {
     asteroid: rl.Sound,
@@ -105,8 +122,8 @@ const AlienSize = enum {
 
     fn speed(self: AlienSize) f32 {
         return switch (self) {
-            .BIG => 3,
-            .SMALL => 5,
+            .BIG => 2,
+            .SMALL => 4,
         };
     }
 };
@@ -389,6 +406,10 @@ fn resetGame() !void {
     state.lives = 3;
     state.score = 0;
     state.reset = false;
+    state.game_over = false;
+
+    //TODO: uncomment when integrated with wasm
+    //state.high_score = js_load_high_score();
 
     try resetStage();
     try resetAsteroids();
@@ -399,6 +420,12 @@ fn resetStage() !void {
             state.lives -= 1;
         } else {
             state.reset = true;
+            state.game_over = true;
+            if (state.score > state.high_score) {
+                state.high_score = state.score;
+                //TODO: uncomment when integrated with wasm
+                //js_save_high_score(state.high_score);
+            }
         }
     }
     state.ship.death_time = 0.0;
@@ -475,7 +502,7 @@ fn update() !void {
         if (rl.isKeyPressed(.key_space) or rl.isMouseButtonPressed(.mouse_button_left)) {
             try state.projectiles.append(.{
                 .pos = rlm.vector2Add(rlm.vector2Scale(dir, SCALE * 0.55), state.ship.pos),
-                .vel = rlm.vector2Scale(dir, -SCALE * 0.2),
+                .vel = rlm.vector2Scale(dir, -SCALE * 0.8),
                 .ttl = 1.25,
                 .spawn = state.now,
             });
@@ -565,12 +592,12 @@ fn update() !void {
             var p = &state.projectiles.items[i];
             p.pos = rlm.vector2Add(p.pos, p.vel);
             p.ttl -= state.delta;
-            if (state.hard_mode) {
-                p.pos = Vector2.init(
-                    @mod(p.pos.x, SCREEN_SIZE.x),
-                    @mod(p.pos.y, SCREEN_SIZE.y),
-                );
-            }
+            // if (state.hard_mode) {
+            // p.pos = Vector2.init(
+            //     @mod(p.pos.x, SCREEN_SIZE.x),
+            //     @mod(p.pos.y, SCREEN_SIZE.y),
+            // );
+            // }
             if (p.ttl <= 0 or p.remove) {
                 _ = state.projectiles.swapRemove(i);
                 continue;
@@ -586,7 +613,7 @@ fn update() !void {
 
             // projectile alien collision
             for (state.projectiles.items) |*p| {
-                if (!p.remove and (state.now - p.spawn) > 0.15 and rlm.vector2Distance(al.pos, p.pos) < al.size.size()) {
+                if (!p.remove and (state.now - p.spawn) > 0.25 and rlm.vector2Distance(al.pos, p.pos) < al.size.size()) {
                     p.remove = true;
                     al.remove = true;
                 }
@@ -617,7 +644,7 @@ fn update() !void {
 
                     try state.projectiles.append(.{
                         .pos = rlm.vector2Add(rlm.vector2Scale(dir, SCALE * 0.55), al.pos),
-                        .vel = rlm.vector2Scale(dir, SCALE * 0.2),
+                        .vel = rlm.vector2Scale(dir, SCALE * 0.25),
                         .ttl = 1.25,
                         .spawn = state.now,
                     });
@@ -652,7 +679,7 @@ fn update() !void {
     }
 
     const bloop_intensity: usize = @min(@as(usize, @intFromFloat(state.now - state.stage_start)) / 16, 4);
-    const bloop_mod = rl.getMonitorRefreshRate(rl.getCurrentMonitor());
+    const bloop_mod: usize = 60;
     const adjusted_bloop_mod: usize = @max(1, bloop_mod >> @intCast(bloop_intensity));
 
     if (state.frame % adjusted_bloop_mod == 0) {
@@ -701,72 +728,130 @@ const SHIP_LINES = [_]Vector2{
 };
 
 fn render() !void {
-    // remaining lives
-    for (0..state.lives) |i| {
-        drawLines(
-            Vector2.init(40.0 + (@as(f32, @floatFromInt(i)) * SCALE), SCALE),
-            SCALE,
-            0,
-            &SHIP_LINES,
-            true,
+    if (state.game_over) {
+        // Render game over screen
+        const game_over_text = "GAME OVER";
+        const score_text = std.fmt.allocPrintZ(
+            state.allocator,
+            "SCORE: {d}",
+            .{state.score},
+        ) catch "SCORE: ERROR";
+        defer state.allocator.free(score_text);
+        const high_score_text = std.fmt.allocPrintZ(
+            state.allocator,
+            "HIGH SCORE: {d}",
+            .{state.high_score},
+        ) catch "HIGH SCORE: ERROR";
+        defer state.allocator.free(high_score_text);
+        const restart_text = "Press SPACE to restart";
+
+        const font_size = 40;
+        const small_font_size = 20;
+
+        const game_over_width = rl.measureText(game_over_text, font_size);
+        const score_width = rl.measureText(score_text, small_font_size);
+        const high_score_width = rl.measureText(high_score_text, small_font_size);
+        const restart_width = rl.measureText(restart_text, small_font_size);
+
+        const center_x = @as(f32, @floatFromInt(rl.getScreenWidth())) / 2;
+        const center_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2;
+
+        rl.drawText(
+            game_over_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(game_over_width)) / 2),
+            @intFromFloat(center_y - 100),
+            font_size,
+            rl.Color.white,
         );
-    }
-
-    try drawNumber(state.score, Vector2.init(SCREEN_SIZE.x - SCALE, SCALE));
-
-    if (!state.ship.isDead()) {
-        drawLines(
-            state.ship.pos,
-            SCALE,
-            state.ship.rot,
-            &SHIP_LINES,
-            true,
+        rl.drawText(
+            score_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(score_width)) / 2),
+            @intFromFloat(center_y),
+            small_font_size,
+            rl.Color.white,
         );
+        rl.drawText(
+            high_score_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(high_score_width)) / 2),
+            @intFromFloat(center_y + 30),
+            small_font_size,
+            rl.Color.white,
+        );
+        rl.drawText(
+            restart_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(restart_width)) / 2),
+            @intFromFloat(center_y + 80),
+            small_font_size,
+            rl.Color.white,
+        );
+    } else {
+        // remaining lives
+        for (0..state.lives) |i| {
+            drawLines(
+                Vector2.init(40.0 + (@as(f32, @floatFromInt(i)) * SCALE), SCALE),
+                SCALE,
+                0,
+                &SHIP_LINES,
+                true,
+            );
+        }
 
-        // draw the thruster
-        const thruster_flash: i32 = @intFromFloat(state.now * 20);
-        if (rl.isKeyDown(.key_w) and @mod(thruster_flash, 2) == 0) {
+        try drawNumber(state.score, Vector2.init(SCREEN_SIZE.x - SCALE, SCALE));
+
+        if (!state.ship.isDead()) {
             drawLines(
                 state.ship.pos,
                 SCALE,
                 state.ship.rot,
-                &[_]Vector2{
-                    rl.Vector2.init(-0.3, 0.4),
-                    rl.Vector2.init(0.0, 0.8),
-                    rl.Vector2.init(0.3, 0.4),
-                },
+                &SHIP_LINES,
                 true,
             );
+
+            // draw the thruster
+            const thruster_flash: i32 = @intFromFloat(state.now * 20);
+            if (rl.isKeyDown(.key_w) and @mod(thruster_flash, 2) == 0) {
+                drawLines(
+                    state.ship.pos,
+                    SCALE,
+                    state.ship.rot,
+                    &[_]Vector2{
+                        rl.Vector2.init(-0.3, 0.4),
+                        rl.Vector2.init(0.0, 0.8),
+                        rl.Vector2.init(0.3, 0.4),
+                    },
+                    true,
+                );
+            }
         }
-    }
-    for (state.asteroids.items) |a| {
-        try drawAsteroid(a);
-    }
-
-    for (state.aliens.items) |a| {
-        drawAlien(a.pos, a.size.size());
-    }
-
-    for (state.particles.items) |p| {
-        switch (p.values) {
-            .LINE => |line| {
-                drawLines(p.pos, line.len, line.rot, &.{ Vector2.init(-0.5, 0.0), Vector2.init(0.5, 0.0) }, true);
-            },
-            .DOT => |dot| {
-                rl.drawCircleV(p.pos, dot.radius, rl.Color.white);
-            },
+        for (state.asteroids.items) |a| {
+            try drawAsteroid(a);
         }
-    }
 
-    for (state.projectiles.items) |p| {
-        rl.drawCircleV(p.pos, SCALE * 0.08, rl.Color.white);
+        for (state.aliens.items) |a| {
+            drawAlien(a.pos, a.size.size());
+        }
+
+        for (state.particles.items) |p| {
+            switch (p.values) {
+                .LINE => |line| {
+                    drawLines(p.pos, line.len, line.rot, &.{ Vector2.init(-0.5, 0.0), Vector2.init(0.5, 0.0) }, true);
+                },
+                .DOT => |dot| {
+                    rl.drawCircleV(p.pos, dot.radius, rl.Color.white);
+                },
+            }
+        }
+
+        for (state.projectiles.items) |p| {
+            rl.drawCircleV(p.pos, SCALE * 0.08, rl.Color.white);
+        }
     }
 }
 
 pub fn main() anyerror!void {
     // Initialization
     //--------------------------------------------------------------------------------------
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = CustomAllocator{};
     const allocator = gpa.allocator();
 
     const screenWidth = 800;
@@ -776,11 +861,12 @@ pub fn main() anyerror!void {
     defer rl.closeWindow(); // Close window and OpenGL context
 
     // imagine running at 60fps, cringe.
-    rl.setTargetFPS(rl.getMonitorRefreshRate(rl.getCurrentMonitor()));
+    rl.setTargetFPS(60);
 
     var prng = std.rand.Xoshiro256.init(@bitCast(std.time.timestamp()));
 
     state = State{
+        .allocator = allocator,
         .delta = 0,
         .now = 0,
         .ship = Ship{
@@ -830,6 +916,10 @@ pub fn main() anyerror!void {
                 try resetGame();
                 state.game_started = true;
             }
+        } else if (state.game_over) {
+            if (rl.isKeyPressed(.key_space)) {
+                try resetGame();
+            }
         } else {
             try update();
         }
@@ -861,7 +951,6 @@ pub fn main() anyerror!void {
             rl.drawText(subtitle, @intFromFloat(subtitle_x), @intFromFloat(subtitle_y), subtitle_font_size, rl.Color.white);
         }
 
-        // DrawText(TextFormat("CURRENT FPS: %i", (int)(1.0f/deltaTime)), GetScreenWidth() - 220, 40, 20, GREEN);
         rl.drawText(
             rl.textFormat("fps: %i", .{rl.getFPS()}),
             rl.getScreenWidth() - 80,
