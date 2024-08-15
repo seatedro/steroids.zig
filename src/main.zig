@@ -9,6 +9,11 @@ const THICKNESS = 2.5;
 const SCREEN_SIZE = rl.Vector2.init(800, 600);
 const SCALE = 24.0;
 
+const HighScore = struct {
+    name: [6]u8,
+    score: u32,
+};
+
 const State = struct {
     allocator: std.mem.Allocator,
     ship: Ship,
@@ -25,7 +30,6 @@ const State = struct {
     last_score: u32 = 0,
     score: u32 = 0,
     high_score: u32 = 0,
-    reset: bool = false,
     //TODO: disable getting shot by yourself.
     hard_mode: bool = true,
     bloop: usize = 0,
@@ -34,9 +38,23 @@ const State = struct {
     frame: usize = 0,
     game_started: bool = false,
     game_over: bool = false,
+    player_name: [6]u8 = [_]u8{0} ** 6, // 5 chars + null terminator
+    name_length: u8 = 0,
+    name_input_active: bool = false,
+    name_entered: bool = false,
+    viewing_high_scores: bool = false,
+    high_scores: [3]HighScore = [_]HighScore{.{ .name = [_]u8{0} ** 6, .score = 0 }} ** 3,
 };
 
 var state: State = undefined;
+
+extern fn js_save_high_score(score: u32, name_ptr: [*]u8, name_len: u8) void;
+extern fn js_load_high_scores(high_scores: [*]HighScore) void;
+extern fn js_load_player_name(name_ptr: [*]u8) u8;
+
+export fn wasm_save_high_score(score: u32) void {
+    state.high_score = score;
+}
 
 const Sound = struct {
     asteroid: rl.Sound,
@@ -393,8 +411,17 @@ fn hitAsteroid(a: *Asteroid, impact: ?Vector2) !void {
 fn resetGame() !void {
     state.lives = 3;
     state.score = 0;
-    state.reset = false;
     state.game_over = false;
+    state.name_input_active = false;
+
+    if (!state.name_entered) {
+        state.name_length = js_load_player_name(&state.player_name);
+        if (state.name_length == 0) {
+            state.name_input_active = true;
+        } else {
+            state.name_entered = true;
+        }
+    }
 
     try resetStage();
     try resetAsteroids();
@@ -404,7 +431,6 @@ fn resetStage() !void {
         if (state.lives != 0) {
             state.lives -= 1;
         } else {
-            state.reset = true;
             state.game_over = true;
             if (state.score > state.high_score) {
                 state.high_score = state.score;
@@ -451,24 +477,21 @@ fn resetAsteroids() !void {
 }
 
 fn update() !void {
-    if (state.reset) {
-        try resetGame();
-    }
     const ROT_SPEED = 1;
     const SPEED = 10;
 
     if (!state.ship.isDead()) {
-        if (rl.isKeyDown(.key_d)) {
+        if (rl.isKeyDown(.key_d) or rl.isKeyDown(.key_l) or rl.isKeyDown(.key_right)) {
             state.ship.rot += ROT_SPEED * math.tau * state.delta;
         }
 
-        if (rl.isKeyDown(.key_a)) {
+        if (rl.isKeyDown(.key_a) or rl.isKeyDown(.key_j) or rl.isKeyDown(.key_left)) {
             state.ship.rot -= ROT_SPEED * math.tau * state.delta;
         }
 
         const angle = state.ship.rot + math.pi / 2.0;
         const dir = Vector2.init(math.cos(angle), math.sin(angle));
-        if (rl.isKeyDown(.key_w)) {
+        if (rl.isKeyDown(.key_w) or rl.isKeyDown(.key_i) or rl.isKeyDown(.key_up)) {
             state.ship.vel = rlm.vector2Subtract(state.ship.vel, rlm.vector2Scale(dir, state.delta * SPEED));
             rl.playSound(sound.thrust);
         }
@@ -712,122 +735,225 @@ const SHIP_LINES = [_]Vector2{
 
 fn render() !void {
     if (state.game_over) {
-        // Render game over screen
-        const game_over_text = "GAME OVER";
-        const score_text = std.fmt.allocPrintZ(
-            state.allocator,
-            "SCORE: {d}",
-            .{state.score},
-        ) catch "SCORE: ERROR";
-        defer state.allocator.free(score_text);
-        const high_score_text = std.fmt.allocPrintZ(
-            state.allocator,
-            "HIGH SCORE: {d}",
-            .{state.high_score},
-        ) catch "HIGH SCORE: ERROR";
-        defer state.allocator.free(high_score_text);
-        const restart_text = "Press SPACE to restart";
-
-        const font_size = 40;
-        const small_font_size = 20;
-
-        const game_over_width = rl.measureText(game_over_text, font_size);
-        const score_width = rl.measureText(score_text, small_font_size);
-        const high_score_width = rl.measureText(high_score_text, small_font_size);
-        const restart_width = rl.measureText(restart_text, small_font_size);
-
-        const center_x = @as(f32, @floatFromInt(rl.getScreenWidth())) / 2;
-        const center_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2;
-
-        rl.drawText(
-            game_over_text,
-            @intFromFloat(center_x - @as(f32, @floatFromInt(game_over_width)) / 2),
-            @intFromFloat(center_y - 100),
-            font_size,
-            rl.Color.white,
-        );
-        rl.drawText(
-            score_text,
-            @intFromFloat(center_x - @as(f32, @floatFromInt(score_width)) / 2),
-            @intFromFloat(center_y),
-            small_font_size,
-            rl.Color.white,
-        );
-        rl.drawText(
-            high_score_text,
-            @intFromFloat(center_x - @as(f32, @floatFromInt(high_score_width)) / 2),
-            @intFromFloat(center_y + 30),
-            small_font_size,
-            rl.Color.white,
-        );
-        rl.drawText(
-            restart_text,
-            @intFromFloat(center_x - @as(f32, @floatFromInt(restart_width)) / 2),
-            @intFromFloat(center_y + 80),
-            small_font_size,
-            rl.Color.white,
-        );
-    } else {
-        // remaining lives
-        for (0..state.lives) |i| {
-            drawLines(
-                Vector2.init(40.0 + (@as(f32, @floatFromInt(i)) * SCALE), SCALE),
-                SCALE,
-                0,
-                &SHIP_LINES,
-                true,
-            );
+        if (state.viewing_high_scores) {
+            renderHighScores();
+        } else {
+            renderGameOver();
         }
+        return;
+    }
+    // remaining lives
+    for (0..state.lives) |i| {
+        drawLines(
+            Vector2.init(40.0 + (@as(f32, @floatFromInt(i)) * SCALE), SCALE),
+            SCALE,
+            0,
+            &SHIP_LINES,
+            true,
+        );
+    }
 
-        try drawNumber(state.score, Vector2.init(SCREEN_SIZE.x - SCALE, SCALE));
+    try drawNumber(state.score, Vector2.init(SCREEN_SIZE.x - SCALE, SCALE));
 
-        if (!state.ship.isDead()) {
+    if (!state.ship.isDead()) {
+        drawLines(
+            state.ship.pos,
+            SCALE,
+            state.ship.rot,
+            &SHIP_LINES,
+            true,
+        );
+
+        // draw the thruster
+        const thruster_flash: i32 = @intFromFloat(state.now * 20);
+        if (rl.isKeyDown(.key_w) and @mod(thruster_flash, 2) == 0) {
             drawLines(
                 state.ship.pos,
                 SCALE,
                 state.ship.rot,
-                &SHIP_LINES,
+                &[_]Vector2{
+                    rl.Vector2.init(-0.3, 0.4),
+                    rl.Vector2.init(0.0, 0.8),
+                    rl.Vector2.init(0.3, 0.4),
+                },
                 true,
             );
+        }
+    }
+    for (state.asteroids.items) |a| {
+        try drawAsteroid(a);
+    }
 
-            // draw the thruster
-            const thruster_flash: i32 = @intFromFloat(state.now * 20);
-            if (rl.isKeyDown(.key_w) and @mod(thruster_flash, 2) == 0) {
-                drawLines(
-                    state.ship.pos,
-                    SCALE,
-                    state.ship.rot,
-                    &[_]Vector2{
-                        rl.Vector2.init(-0.3, 0.4),
-                        rl.Vector2.init(0.0, 0.8),
-                        rl.Vector2.init(0.3, 0.4),
-                    },
-                    true,
-                );
-            }
-        }
-        for (state.asteroids.items) |a| {
-            try drawAsteroid(a);
-        }
+    for (state.aliens.items) |a| {
+        drawAlien(a.pos, a.size.size());
+    }
 
-        for (state.aliens.items) |a| {
-            drawAlien(a.pos, a.size.size());
+    for (state.particles.items) |p| {
+        switch (p.values) {
+            .LINE => |line| {
+                drawLines(p.pos, line.len, line.rot, &.{ Vector2.init(-0.5, 0.0), Vector2.init(0.5, 0.0) }, true);
+            },
+            .DOT => |dot| {
+                rl.drawCircleV(p.pos, dot.radius, rl.Color.white);
+            },
         }
+    }
 
-        for (state.particles.items) |p| {
-            switch (p.values) {
-                .LINE => |line| {
-                    drawLines(p.pos, line.len, line.rot, &.{ Vector2.init(-0.5, 0.0), Vector2.init(0.5, 0.0) }, true);
-                },
-                .DOT => |dot| {
-                    rl.drawCircleV(p.pos, dot.radius, rl.Color.white);
-                },
-            }
-        }
+    for (state.projectiles.items) |p| {
+        rl.drawCircleV(p.pos, SCALE * 0.08, rl.Color.white);
+    }
+}
 
-        for (state.projectiles.items) |p| {
-            rl.drawCircleV(p.pos, SCALE * 0.08, rl.Color.white);
-        }
+fn renderTitle() void {
+    const text = "steroids.zig";
+    const subtitle = "press SPACE to start";
+    const title_font_size = 60;
+    const subtitle_font_size = 20;
+    const movement_help_text = "movement: wasd/ijkl/arrows";
+    const shoot_help_text = "shoot: space/lmb";
+
+    const title_width = rl.measureText(text, title_font_size);
+    const subtitle_width = rl.measureText(subtitle, subtitle_font_size);
+    const movement_help_width = rl.measureText(movement_help_text, subtitle_font_size);
+    const shoot_help_width = rl.measureText(shoot_help_text, subtitle_font_size);
+
+    const title_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(title_width))) / 2;
+    const title_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2 - 40;
+
+    const subtitle_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(subtitle_width))) / 2;
+    const subtitle_y = title_y + 80;
+
+    const movement_help_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(movement_help_width))) / 2;
+    // place help text at the bottom of the screen
+    const movement_help_y = @as(f32, @floatFromInt(rl.getScreenHeight())) - subtitle_font_size - 5;
+
+    const shoot_help_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(shoot_help_width))) / 2;
+    const shoot_help_y = movement_help_y - subtitle_font_size;
+
+    rl.drawText(text, @intFromFloat(title_x), @intFromFloat(title_y), title_font_size, rl.Color.white);
+    rl.drawText(subtitle, @intFromFloat(subtitle_x), @intFromFloat(subtitle_y), subtitle_font_size, rl.Color.white);
+    rl.drawText(movement_help_text, @intFromFloat(movement_help_x), @intFromFloat(movement_help_y), subtitle_font_size, rl.Color.white);
+    rl.drawText(shoot_help_text, @intFromFloat(shoot_help_x), @intFromFloat(shoot_help_y), subtitle_font_size, rl.Color.white);
+}
+
+fn renderHighScores() void {
+    const title_text = "HIGH SCORES";
+    const instruction_text = "Press SPACE to return";
+
+    const font_size = 40;
+    const small_font_size = 20;
+
+    const title_width = rl.measureText(title_text, font_size);
+    const instruction_width = rl.measureText(instruction_text, small_font_size);
+
+    const center_x = @as(f32, @floatFromInt(rl.getScreenWidth())) / 2;
+    const center_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2;
+
+    rl.drawText(
+        title_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(title_width)) / 2),
+        @intFromFloat(center_y - 100),
+        font_size,
+        rl.Color.white,
+    );
+
+    for (state.high_scores, 0..) |high_score, i| {
+        if (high_score.score == 0) break;
+        const score_text = std.fmt.allocPrintZ(
+            state.allocator,
+            "{d}. {s}: {d}",
+            .{ i + 1, high_score.name[0..5], high_score.score },
+        ) catch "ERROR";
+        defer state.allocator.free(score_text);
+        const score_width = rl.measureText(score_text, small_font_size);
+        rl.drawText(
+            score_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(score_width)) / 2),
+            @intFromFloat(center_y - 20 + @as(f32, @floatFromInt(i)) * 30),
+            small_font_size,
+            rl.Color.white,
+        );
+    }
+
+    rl.drawText(
+        instruction_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(instruction_width)) / 2),
+        @intFromFloat(center_y + 100),
+        small_font_size,
+        rl.Color.white,
+    );
+}
+
+fn renderGameOver() void {
+    const game_over_text = "GAME OVER";
+    const score_text = std.fmt.allocPrintZ(
+        state.allocator,
+        "SCORE: {d}",
+        .{state.score},
+    ) catch "SCORE: ERROR";
+    defer state.allocator.free(score_text);
+    const high_score_text = std.fmt.allocPrintZ(
+        state.allocator,
+        "HIGH SCORE: {d}",
+        .{state.high_scores[0].score},
+    ) catch "HIGH SCORE: ERROR";
+    defer state.allocator.free(high_score_text);
+    const instruction_text = if (state.name_input_active)
+        "Enter your name (max 5 letters) and press ENTER"
+    else
+        "Press SPACE to play again or H to view high scores";
+
+    const font_size = 40;
+    const small_font_size = 20;
+
+    const game_over_width = rl.measureText(game_over_text, font_size);
+    const score_width = rl.measureText(score_text, small_font_size);
+    const high_score_width = rl.measureText(high_score_text, small_font_size);
+    const instruction_width = rl.measureText(instruction_text, small_font_size);
+
+    const center_x = @as(f32, @floatFromInt(rl.getScreenWidth())) / 2;
+    const center_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2;
+
+    rl.drawText(
+        game_over_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(game_over_width)) / 2),
+        @intFromFloat(center_y - 100),
+        font_size,
+        rl.Color.white,
+    );
+    rl.drawText(
+        score_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(score_width)) / 2),
+        @intFromFloat(center_y),
+        small_font_size,
+        rl.Color.white,
+    );
+    rl.drawText(
+        high_score_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(high_score_width)) / 2),
+        @intFromFloat(center_y + 30),
+        small_font_size,
+        rl.Color.white,
+    );
+    rl.drawText(
+        instruction_text,
+        @intFromFloat(center_x - @as(f32, @floatFromInt(instruction_width)) / 2),
+        @intFromFloat(center_y + 80),
+        small_font_size,
+        rl.Color.white,
+    );
+
+    if (state.name_input_active) {
+        const name_text = std.fmt.allocPrintZ(state.allocator, "{s}", .{state.player_name[0..state.name_length]}) catch "ERROR";
+        defer state.allocator.free(name_text);
+        const name_width = rl.measureText(name_text, small_font_size);
+        rl.drawText(
+            name_text,
+            @intFromFloat(center_x - @as(f32, @floatFromInt(name_width)) / 2),
+            @intFromFloat(center_y + 120),
+            small_font_size,
+            rl.Color.yellow,
+        );
     }
 }
 
@@ -900,7 +1026,29 @@ pub fn main() anyerror!void {
                 state.game_started = true;
             }
         } else if (state.game_over) {
-            if (rl.isKeyPressed(.key_space)) {
+            if (state.name_input_active) {
+                const key = rl.getCharPressed();
+                if (key >= 32 and key <= 125 and state.name_length < 5) {
+                    state.player_name[state.name_length] = @intCast(key);
+                    state.name_length += 1;
+                }
+                if (rl.isKeyPressed(.key_backspace) and state.name_length > 0) {
+                    state.name_length -= 1;
+                    state.player_name[state.name_length] = 0;
+                }
+                if (rl.isKeyPressed(.key_enter) and state.name_length > 0) {
+                    state.name_entered = true;
+                    state.name_input_active = false;
+                    js_save_high_score(state.score, &state.player_name, state.name_length);
+                    js_load_high_scores(&state.high_scores);
+                }
+            } else if (state.viewing_high_scores) {
+                if (rl.isKeyPressed(.key_space)) {
+                    state.viewing_high_scores = false;
+                }
+            } else if (rl.isKeyPressed(.key_h)) {
+                state.viewing_high_scores = true;
+            } else if (rl.isKeyPressed(.key_space)) {
                 try resetGame();
             }
         } else {
@@ -916,22 +1064,7 @@ pub fn main() anyerror!void {
         if (state.game_started) {
             try render();
         } else {
-            const text = "steroids.zig";
-            const subtitle = "press SPACE to start";
-            const title_font_size = 60;
-            const subtitle_font_size = 20;
-
-            const title_width = rl.measureText(text, title_font_size);
-            const subtitle_width = rl.measureText(subtitle, subtitle_font_size);
-
-            const title_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(title_width))) / 2;
-            const title_y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2 - 40;
-
-            const subtitle_x = (@as(f32, @floatFromInt(rl.getScreenWidth())) - @as(f32, @floatFromInt(subtitle_width))) / 2;
-            const subtitle_y = title_y + 80;
-
-            rl.drawText(text, @intFromFloat(title_x), @intFromFloat(title_y), title_font_size, rl.Color.white);
-            rl.drawText(subtitle, @intFromFloat(subtitle_x), @intFromFloat(subtitle_y), subtitle_font_size, rl.Color.white);
+            renderTitle();
         }
 
         rl.drawText(

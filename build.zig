@@ -54,11 +54,17 @@ pub fn build(b: *std.Build) !void {
         link_step.addArg("--preload-file");
         link_step.addArg("assets");
 
+        // add js library
+        link_step.addArg("--js-library");
+        link_step.addArg("src/lib.js");
+
         link_step.addArg("-sALLOW_MEMORY_GROWTH");
         link_step.addArg("-sWASM_MEM_MAX=16MB");
         link_step.addArg("-sTOTAL_MEMORY=16MB");
+        // link_step.addArg("--memoryprofiler");
         link_step.addArg("-sERROR_ON_UNDEFINED_SYMBOLS=0");
         link_step.addArg("-sEXPORTED_RUNTIME_METHODS=ccall,cwrap");
+        link_step.addArg("-sEXPORTED_FUNCTIONS=['_main', '_wasm_save_high_score']");
 
         b.getInstallStep().dependOn(&link_step.step);
         const run_step = try rlz.emcc.emscriptenRunStep(b);
